@@ -1,23 +1,21 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <Wire.h>
-#include "DHT.h"
+//#include "DHT.h"
+
+#include "ELMduino.h"
+#include "BluetoothSerial.h"
 
 /* ========================================================================== */
 /*                      MAKRÓK, CSAK EZEKET KELL ÁLLÍTANI                     */
 /* ========================================================================== */
 
-
-#define WIFI_NEV "valami wifi SSID"
-#define WIFI_JELSZO "jelszo a wifi-hez"
+#define WIFI_NEV "ssid ide"
+#define WIFI_JELSZO "jelszo ide"
 
 /* --------------------------- MQTT BROKER ADATAI --------------------------- */
-#define MQTT_IP "ip cim ide"
+#define MQTT_IP "ip ide"
 
 /* ========================================================================== */
-
-
-
 
 
 const char* ssid = WIFI_NEV;            // SSID
@@ -27,17 +25,26 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 
-
-
-
-#define DHT_SENSOR_TYPE DHT_TYPE_11
+/*#define DHT_SENSOR_TYPE DHT_TYPE_11
 #define DHTPIN 14
 #define DHTTYPE DHT11   
-DHT dht(DHTPIN, DHTTYPE);
+DHT dht(DHTPIN, DHTTYPE);*/
 #define ledPin  27
 long lastMsg = 0;
 char msg[50];
 int value = 0;
+
+
+BluetoothSerial serialBT;
+#define ELM_PORT serialBT
+const bool DEBUG        = true;
+const int  TIMEOUT      = 2000;
+const bool HALT_ON_FAIL = false;
+ELM327 myELM327;
+typedef enum { ENG_RPM, SPEED } obd_pid_states;
+obd_pid_states obd_state = ENG_RPM;
+float rpm = 0;
+float mph = 0;
 
 
 void setup() {
@@ -58,22 +65,78 @@ void setup() {
 
 
   pinMode(ledPin, OUTPUT);
-  dht.begin();
-  Serial.println();
+  //dht.begin();
   Serial.println();
   Serial.println("Wait for WiFi... ");
+
+    /* ----------------------------- OBD CSATLAKOZÁS ---------------------------- */
+  ELM_PORT.begin("BT");
+  Serial.println("Attempting to connect to ELM327...");
+  if (!myELM327.begin(ELM_PORT, DEBUG, TIMEOUT))
+  {
+    Serial.println("Couldn't connect to OBD scanner");
+
+    if (HALT_ON_FAIL)
+      while (1);
+  }
+  else {
+    Serial.println("Connected to ELM327");
+  }
+
 }
+
+
 void loop() {
   if (!client.connected()) {
     reconnect_mqtt();   // Ha nincs kapcsolat az mqtt szerverrel, újra csatlakozik
   }
 
+  switch (obd_state)
+  {
+    case ENG_RPM:
+    {
+      rpm = myELM327.rpm();
+      
+      if (myELM327.nb_rx_state == ELM_SUCCESS)
+      {
+        Serial.print("rpm: ");
+        Serial.println(rpm);
+        obd_state = SPEED;
+      }
+      else if (myELM327.nb_rx_state != ELM_GETTING_MSG)
+      {
+        myELM327.printError();
+        obd_state = SPEED;
+      }
+      
+      break;
+    }
+    
+    case SPEED:
+    {
+      mph = myELM327.mph();
+      
+      if (myELM327.nb_rx_state == ELM_SUCCESS)
+      {
+        Serial.print("mph: ");
+        Serial.println(mph);
+        obd_state = ENG_RPM;
+      }
+      else if (myELM327.nb_rx_state != ELM_GETTING_MSG)
+      {
+        myELM327.printError();
+        obd_state = ENG_RPM;
+      }
+      
+      break;
+    }
+  }
 
   client.loop();
   long now = millis();
   /* ---------------------- DHT LEOLVASÁS ÉS ADAT KÜLDÉSE --------------------- */
 
-  if (now - lastMsg > 10000) { // 10 másodpercenként leolvassuk a DHT11-t és elküldjük
+  /*if (now - lastMsg > 10000) { // 10 másodpercenként leolvassuk a DHT11-t és elküldjük
 
     lastMsg = now;
     float temperature = dht.readTemperature();
@@ -91,7 +154,7 @@ void loop() {
     //esp32 névre hallgatunk a serveren
     client.publish("esp32/dht11", strbuf);
 
-  }
+  }*/
 }
 
 /* ---------------------- MQTT BEÉRKEZŐ ÜZENET KEZELÉSE --------------------- */
@@ -113,6 +176,7 @@ void callback(char* topic, byte* message, unsigned int length) {    // Ha MQTT �
     digitalWrite(ledPin, LOW);
   }
 }
+
 /* --------------------- MQTT SZERVER RECONNECT KEZELES --------------------- */
 
 void reconnect_mqtt() {
